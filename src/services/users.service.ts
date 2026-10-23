@@ -1686,31 +1686,54 @@ class UserService {
    */
   public async adaptADGenerateAnswer(adaptADRequest: AdaptADRequestDto): Promise<string> {
     try {
+      if (!adaptADRequest || typeof adaptADRequest !== 'object') {
+        throw new HttpException(400, 'Request body is required');
+      }
       const { youtubeVideoId, question, timeStamp } = adaptADRequest;
 
-      if (!youtubeVideoId || timeStamp === undefined || timeStamp === null) {
+      if (typeof youtubeVideoId !== 'string' || !/^[A-Za-z0-9_-]{11}$/.test(youtubeVideoId)) {
+        throw new HttpException(400, 'youtubeVideoId must be a valid 11-character YouTube video ID');
+      }
+
+      if (timeStamp === undefined || timeStamp === null) {
         throw new HttpException(400, 'youtubeVideoId and timeStamp are required');
+      }
+
+      const currentTime = typeof timeStamp === 'number' ? timeStamp : typeof timeStamp === 'string' && timeStamp.trim() !== '' ? Number(timeStamp) : Number.NaN;
+      if (!Number.isFinite(currentTime) || currentTime < 0) {
+        throw new HttpException(400, 'timeStamp must be a finite, non-negative number');
+      }
+      if (question !== undefined && typeof question !== 'string') {
+        throw new HttpException(400, 'question must be a string');
       }
 
       const requestBody = {
         video_id: youtubeVideoId,
         question,
-        current_time: timeStamp.toString(),
+        current_time: String(currentTime),
       };
 
       logger.info(`adaptAD request for ${youtubeVideoId} at ${requestBody.current_time}s`, { question });
-      const response = await axios.post(`${AI_SERVICE_URL}/api/info-bot`, requestBody);
+      const response = await axios.post(`${AI_SERVICE_URL}/api/info-bot`, requestBody, { timeout: 60000 });
 
-      if (response?.data?.status === 'success') {
+      if (response?.data?.status === 'success' && typeof response.data.response === 'string' && response.data.response.trim()) {
         logger.info(`adaptAD response for ${youtubeVideoId}: ${response.data.response}`);
         return response.data.response;
       }
 
       logger.warn(`adaptAD: AI service returned no answer for ${youtubeVideoId}`, { data: response?.data });
-      return 'Not Found Description or Answer';
+      throw new HttpException(502, 'AI service returned no description or answer');
     } catch (error) {
       if (error instanceof HttpException) {
         throw error;
+      }
+      if (axios.isAxiosError(error) && ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code || '')) {
+        logger.error(`adaptAD: AI service request timed out for ${adaptADRequest.youtubeVideoId}`);
+        throw new HttpException(504, 'AI service request timed out');
+      }
+      if (axios.isAxiosError(error)) {
+        logger.error(`adaptAD: request to AI service failed: ${error.message}`);
+        throw new HttpException(502, 'AI service request failed');
       }
       logger.error(`adaptAD: request to AI service failed: ${error.message}`);
       throw new HttpException(500, 'Request for AI answer failed');
